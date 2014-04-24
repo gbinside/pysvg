@@ -16,6 +16,7 @@
 __author__ = 'Roberto'
 
 from HTMLParser import HTMLParser, HTMLParseError
+import copy
 
 ATTRS = 'attrs'
 TAG_NAME = 'tag_name'
@@ -40,14 +41,36 @@ def _render_attrs(attrs, prefix=''):
 
 
 class GenericParser(HTMLParser):
-    def __init__(self):
+    def __init__(self, dom=None):
         HTMLParser.__init__(self)
-        self.dom = list()
+        if dom is None:
+            self.dom = list()
+        else:
+            self.dom = copy.deepcopy(dom)
         self._current = [self.dom]
         self._tag_tree = []
 
+    def loads(self, data):
+        self.feed(data)
+
+    def load(self, filename):
+        self.loads(open(filename, 'rb').read())
+
     def handle_decl(self, decl):
         self._current[-1].append({TYPE: DECL, VALUE: decl})
+
+    def insert(self, e, after=None, lista=None):
+        if lista is None:
+            lista = self.dom
+        pos = 0
+        for x in lista:
+            if after == x:
+                lista.insert(pos + 1, e)
+                return 1
+            pos += 1
+            if x[TYPE] == TAG:
+                if self.insert(e, after, x[VALUE]):
+                    break
 
     def handle_pi(self, data):
         self._current[-1].append({TYPE: PI, VALUE: data})
@@ -99,6 +122,11 @@ class GenericParser(HTMLParser):
         return ''.join(ret)
 
 
+#  _____ ___ ___ _____
+# |_   _| __/ __|_   _|
+#   | | | _|\__ \ | |
+#   |_| |___|___/ |_|
+
 def test1(parser):
     assert len(parser.dom) == 6
 
@@ -112,7 +140,7 @@ def main(argv):
 
     my_name = inspect.stack()[0][3]
     parser = GenericParser()
-    parser.feed(open('test/test.svg', 'rb').read())
+    parser.load('test/test.svg')
     for f in argv:
         globals()[f](parser)
     if not argv:
