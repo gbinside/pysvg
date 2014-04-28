@@ -1,3 +1,19 @@
+#!/usr/bin/env python
+# -*- coding: UTF-8 -*-
+# 
+# (c) Roberto Gambuzzi
+# Creato:          17/04/2014 18:38:15
+# Ultima Modifica: 28/04/2014 21:22:18
+# 
+# v 0.0.1.0
+# 
+# file: C:\Dropbox\coding dojo\svg python parser\node.py
+# auth: Roberto Gambuzzi <gambuzzi@gmail.com>
+# desc: 
+# 
+# $Id: node.py 28/04/2014 21:22:18 Roberto $
+# --------------
+
 __author__ = 'Roberto'
 
 from generic_parser import GenericParser, TAG_NAME, TYPE, TAG, VALUE, ATTRS

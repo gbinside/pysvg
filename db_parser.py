@@ -1,18 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
-#
+# 
 # (c) Roberto Gambuzzi
-# Creato:          17/04/2014 07:56:04
-# Ultima Modifica: 18/04/2014 19:57:03
-#
-# v 0.0.1.1
-#
-# file: C:\dropbox\coding dojo\svg python parser\generic_parser.py
+# Creato:          24/04/2014 08:51:23
+# Ultima Modifica: 28/04/2014 21:22:05
+# 
+# v 0.0.1.0
+# 
+# file: C:\Dropbox\coding dojo\svg python parser\db_parser.py
 # auth: Roberto Gambuzzi <gambuzzi@gmail.com>
-# desc:
-#
-# $Id: generic_parser.py 18/04/2014 19:57:03 Roberto $
+# desc: 
+# 
+# $Id: db_parser.py 28/04/2014 21:22:05 Roberto $
 # --------------
+
 __author__ = 'Roberto'
 
 from HTMLParser import HTMLParser, HTMLParseError
