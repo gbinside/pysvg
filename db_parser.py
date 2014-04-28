@@ -118,6 +118,23 @@ class DbParser(HTMLParser):
         cursor.execute('SELECT last_insert_rowid()')
         return cursor.fetchone()[0]
 
+    def set_elem_value(self, _id, value):
+        return self._update_elem(_id, data=value)
+
+    def _update_elem(self, _id, **vals_to_update):
+        cursor = self._conn.cursor()
+        sql = []
+        vals = []
+        for k, v in vals_to_update.items():
+            sql.append(k + '=?')
+            vals.append(v)
+        vals.append(_id)
+        sql = ','.join(sql)
+        cursor.execute('UPDATE elem SET ' + sql + '  WHERE id=?', vals)
+        self._conn.commit()
+        cursor.execute('SELECT last_insert_rowid()')
+        return cursor.fetchone()[0]
+
     def _insert_attr(self, k, v, elem_id=0):
         cursor = self._conn.cursor()
         cursor.execute('INSERT INTO attr (`k`,`v`,`elem_id`) VALUES (?,?,?);', (k, v, elem_id))
@@ -149,9 +166,20 @@ class DbParser(HTMLParser):
         else:
             raise DbParserException('x')
 
-    def _select_elem(self, i=0):
+    def _select_elem(self, **where):
+        if not where:
+            where = {'parent_id': 0}
         cursor = self._conn.cursor()
-        cursor.execute('SELECT * FROM elem WHERE parent_id=? ORDER BY sort_order;', (i,))
+        sql = []
+        vals = []
+        for k, v in where.items():
+            sql.append(k + '=?')
+            vals.append(v)
+        sql = ' AND '.join(sql)
+        if not where:
+            sql = 'parent_id=?'
+            vals = (0,)
+        cursor.execute('SELECT * FROM elem WHERE ' + sql + ' ORDER BY sort_order;', vals)
         ret = cursor.fetchall()
         return ret
 
@@ -174,7 +202,6 @@ class DbParser(HTMLParser):
                 else:
                     self._insert_attr(k, v, rec[0])
 
-
     def get_attr(self, recs, wrapper=list):
         ret = []
         for rec in recs:
@@ -190,15 +217,29 @@ class DbParser(HTMLParser):
         cursor.execute('SELECT count(*) FROM elem WHERE parent_id=0;')
         return cursor.fetchone()[0]
 
-    def childs(self, recs):
+    def yield_childs(self, recs, t=None):
+        for rec in recs:
+            for child in (self._select_elem(parent_id=rec[0], type=t) if t else self._select_elem(parent_id=rec[0])):
+                yield child
+                for x in self.yield_childs((child,), t):
+                    yield x
+
+    def childs(self, recs, _type=None):
+        return [x for x in self.yield_childs(recs) if not _type or x[1] == _type]
+
+    def parent(self, recs):
         ret = []
         for rec in recs:
-            ret.append(self._select_elem(rec[0]))
+            for x in self._select_elem(id=rec[3]):
+                ret.append(x)
         return ret
 
-    def to_string(self, recs, after=None, html=None):
+    def to_string(self, recs, before=None, after=None, html=None):
         ret = []
         for l in recs:
+            if before:
+                if l in before:
+                    ret.append(html)
             if l[1] == DECL:
                 ret.append('<!' + l[2] + '>')
             elif l[1] == PI:
@@ -208,7 +249,7 @@ class DbParser(HTMLParser):
             elif l[1] == DATA:
                 ret.append(l[2])
             elif l[1] == TAG:
-                content = self.to_string(self._select_elem(l[0]), after=after, html=html)
+                content = self.to_string(self._select_elem(parent_id=l[0]), after=after, html=html)
                 attributes = render_attrs(self._select_attr(l[0]), ' ')
                 tagname = l[2]
                 if content:
@@ -322,10 +363,13 @@ def test6(parser):
 def test7(parser):
     template = parser.id('template')
     childs = parser.childs(template)
-    assert len(childs[0]) == 13
+    assert len(childs) == 18
 
 
 def test8(parser):
+    poker_values = (1, 2, 3, 5, 8, 13, 20, 40, 100)
+    ore_values = (1, 2, 3, 4, 6, 8, 'x2', 'x3', 'x5')
+
     x = parser.id('spaziatura')
     attrs = parser.get_attr(x, wrapper=dict)[0]
     height = float(attrs['height'])
@@ -336,10 +380,50 @@ def test8(parser):
 
     parser2 = parser
     for i in xrange(8):
+        this_id = 'template%i' % i
         parser2 = parser2.insert_html_after(template, html)
         template = parser2.id('template')[-1:]
-        parser2.set_attr(template, id='template%i' % i)
+        parser2.set_attr(template, id=this_id)
+
+        for rec in parser2.yield_childs(parser2.id(this_id), TAG):
+            attrs = parser2.get_attr((rec,), wrapper=dict)[0]
+            try:
+                new_x = float(attrs['x']) + width * ((i + 1) % 3)
+                new_y = float(attrs['y']) - height * ((i + 1) / 3)
+                parser2.set_attr((rec,), x=new_x, y=new_y)
+            except KeyError:
+                pass
+            try:
+                transform = attrs['transform']
+                for pre, _x, mid, _y, post in re.findall(r'(.*?)([0-9.]+)(\D+)([0-9.]+)(\D+)', transform, re.I):
+                    parser2.set_attr((rec,), transform="%s%s%s%s%s" % (
+                        pre, float(_x) + width * ((i + 1) % 3), mid, float(_y) - height * ((i + 1) / 3), post))
+            except KeyError:
+                pass
+
+    for j, rec in enumerate(parser2.childs(parser2.id('poker'), DATA)):
+        parser2.set_elem_value(rec[0], poker_values[j])
+
+    for j, rec in enumerate(parser2.childs(parser2.id('ore'), DATA)):
+        parser2.set_elem_value(rec[0], ore_values[j])
+        if len(str(ore_values[j])) > 1:
+            delta = 8 * (len(str(ore_values[j])) - 1) # the spartan way
+            for parent in parser2.parent((rec,)):
+                attrs = parser2.get_attr((parent,), wrapper=dict)[0]
+                try:
+                    new_x = float(attrs['x']) - delta
+                    parser2.set_attr((parent,), x=new_x)
+                except KeyError:
+                    pass
+
     open('out3.svg', 'wb').write(str(parser2))
+
+
+def test9(parser):
+    template = parser.id('template')
+    childs = parser.childs(template, _type=TAG)
+    assert len(childs) == 9
+    assert all((x[1] == TAG for x in childs))
 
 
 def main(argv):
