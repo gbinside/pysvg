@@ -407,7 +407,7 @@ def test8(parser):
     for j, rec in enumerate(parser2.childs(parser2.id('ore'), DATA)):
         parser2.set_elem_value(rec[0], ore_values[j])
         if len(str(ore_values[j])) > 1:
-            delta = 8 * (len(str(ore_values[j])) - 1) # the spartan way
+            delta = 8 * (len(str(ore_values[j])) - 1)  # the spartan way
             for parent in parser2.parent((rec,)):
                 attrs = parser2.get_attr((parent,), wrapper=dict)[0]
                 try:
