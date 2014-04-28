@@ -1,27 +1,10 @@
-#!/usr/bin/env python
-# -*- coding: UTF-8 -*-
-# 
-# (c) Roberto Gambuzzi
-# Creato:          24/04/2014 08:51:23
-# Ultima Modifica: 28/04/2014 21:22:05
-# 
-# v 0.0.1.0
-# 
-# file: C:\Dropbox\coding dojo\svg python parser\db_parser.py
-# auth: Roberto Gambuzzi <gambuzzi@gmail.com>
-# desc: 
-# 
-# $Id: db_parser.py 28/04/2014 21:22:05 Roberto $
-# --------------
-
 __author__ = 'Roberto'
 
 from HTMLParser import HTMLParser, HTMLParseError
+from collections import OrderedDict
 import sqlite3 as sqlite
 import re
 
-#DATABASE = r'c:\temp\temp.sqlite'
-DATABASE = r':memory:'
 #element types
 COMMENT = '__comment__'
 DATA = '__data__'
@@ -65,83 +48,33 @@ CREATE TABLE `attr` (
 """
 
 
-class DbParserException(HTMLParseError):
+class ParserException(HTMLParseError):
     pass
-
-
-def regexp(expr, item):
-    reg = re.compile(expr)
-    return reg.search(item) is not None
 
 
 def render_attrs(attrs, prefix=''):
     ret = []
-    for k, v in attrs:
+    for k, v in attrs.items():
         ret.append('%s="%s"' % (k, v))
     return prefix + ' '.join(ret)
 
 
-def make_db_connection():
-    out_conn = sqlite.connect(DATABASE, detect_types=sqlite.PARSE_DECLTYPES, check_same_thread=False)
-    out_conn.text_factory = str
-    out_conn.create_function("REGEXP", 2, regexp)
-    for sql in SCHEMA.split('|||'):
-        out_conn.execute(sql)
-    out_conn.commit()
-    return out_conn
-
-
-class DbParser(HTMLParser):
+class DictParser(HTMLParser):
     def __init__(self, html=None):
-        self._conn = make_db_connection()
         self._sort_order = 0
         HTMLParser.__init__(self)
         self._tag_tree = []
         if html is not None:
             self.feed(html)
+        self._elem = dict()
+        self._parent_sons = dict()
+        self._attr = dict()
 
     def loads(self, data):
         self.feed(data)
 
     def load(self, filename):
         self.loads(open(filename, 'rb').read())
-
-    def _shift_order(self):
-        self._conn.execute('UPDATE elem SET sort_order = sort_order*10')
-        self._conn.commit()
-
-    def _insert_elem(self, elem_type, data, parent_id=0):
-        self._sort_order += 1
-        cursor = self._conn.cursor()
-        cursor.execute('INSERT INTO elem (`type`,`data`,`parent_id`,`sort_order`) VALUES (?,?,?,?);',
-                       (elem_type, data, parent_id, self._sort_order))
-        self._conn.commit()
-        cursor.execute('SELECT last_insert_rowid()')
-        return cursor.fetchone()[0]
-
-    def set_elem_value(self, _id, value):
-        return self._update_elem(_id, data=value)
-
-    def _update_elem(self, _id, **vals_to_update):
-        cursor = self._conn.cursor()
-        sql = []
-        vals = []
-        for k, v in vals_to_update.items():
-            sql.append(k + '=?')
-            vals.append(v)
-        vals.append(_id)
-        sql = ','.join(sql)
-        cursor.execute('UPDATE elem SET ' + sql + '  WHERE id=?', vals)
-        self._conn.commit()
-        cursor.execute('SELECT last_insert_rowid()')
-        return cursor.fetchone()[0]
-
-    def _insert_attr(self, k, v, elem_id=0):
-        cursor = self._conn.cursor()
-        cursor.execute('INSERT INTO attr (`k`,`v`,`elem_id`) VALUES (?,?,?);', (k, v, elem_id))
-        self._conn.commit()
-        cursor.execute('SELECT last_insert_rowid()')
-        return cursor.fetchone()[0]
 
     def handle_decl(self, decl):
         self._insert_elem(DECL, decl, self._tag_tree[-1]['id'] if self._tag_tree else 0)
@@ -165,45 +98,66 @@ class DbParser(HTMLParser):
         if tag == self._tag_tree[-1]['tag']:
             self._tag_tree.pop()
         else:
-            raise DbParserException('x')
+            raise ParserException('x')
+
+    def _shift_order(self):
+        self._elem = dict((x * 10, y) for x, y in self._elem.items())
+
+    def _insert_elem(self, elem_type, data, parent_id=0):
+        self._sort_order += 1
+        self._elem[self._sort_order] = dict(id=self._sort_order, type=elem_type, data=data, parent_id=parent_id,
+                                            sort_order=self._sort_order)
+        try:
+            self._parent_sons[parent_id].append(self._elem[self._sort_order])
+        except KeyError:
+            self._parent_sons[parent_id] = [self._elem[self._sort_order]]
+        return self._sort_order
+
+    def set_elem_value(self, _id, value):
+        self._elem[_id]['data'] = value
+
+    def _update_elem(self, _id, **vals_to_update):
+        self._elem[_id].update(vals_to_update)
+        return self._sort_order
+
+    def _insert_attr(self, k, v, elem_id=0):
+        try:
+            self._attr[elem_id][k] = v
+        except KeyError:
+            self._attr[elem_id] = OrderedDict()
+            self._attr[elem_id][k] = v
+        return elem_id
 
     def _select_elem(self, **where):
         if not where:
             where = {'parent_id': 0}
-        cursor = self._conn.cursor()
-        sql = []
-        vals = []
-        for k, v in where.items():
-            sql.append(k + '=?')
-            vals.append(v)
-        sql = ' AND '.join(sql)
-        cursor.execute('SELECT * FROM elem WHERE ' + sql + ' ORDER BY sort_order;', vals)
-        ret = cursor.fetchall()
+        items_where = where.items()
+        ret = [self._elem[x] for x in self._elem if all((y in self._elem[x].items() for y in items_where))]
         return ret
 
     def _select_attr(self, i=0):
-        cursor = self._conn.cursor()
-        cursor.execute('SELECT k,v FROM attr WHERE elem_id=?;', (i,))
-        ret = cursor.fetchall()
+        try:
+            ret = self._attr[i]
+        except KeyError:
+            ret = OrderedDict()
         return ret
 
     def _update_attr(self, key, value, elem_id=0):
-        self._conn.execute('UPDATE attr SET v=? WHERE elem_id=? AND k=?;', (value, elem_id, key))
-        self._conn.commit()
+        self._attr[elem_id][key] = value
 
     def set_attr(self, recs, **params):
         for rec in recs:
-            attr = self._select_attr(rec[0])
+            attr = self._select_attr(rec['id'])
             for k, v in params.items():
                 if k in (x[0] for x in attr):
-                    self._update_attr(k, v, rec[0])
+                    self._update_attr(k, v, rec['id'])
                 else:
-                    self._insert_attr(k, v, rec[0])
+                    self._insert_attr(k, v, rec['id'])
 
     def get_attr(self, recs, wrapper=list):
         ret = []
         for rec in recs:
-            ret.append(wrapper(self._select_attr(rec[0])))
+            ret.append(wrapper(self._select_attr(rec['id'])))
         return ret
 
     def __str__(self):
@@ -211,24 +165,23 @@ class DbParser(HTMLParser):
         return self.to_string(ret)
 
     def __len__(self):
-        cursor = self._conn.cursor()
-        cursor.execute('SELECT count(*) FROM elem WHERE parent_id=0;')
-        return cursor.fetchone()[0]
+        return len(self._parent_sons[0])
 
     def yield_childs(self, recs, t=None):
         for rec in recs:
-            for child in (self._select_elem(parent_id=rec[0], type=t) if t else self._select_elem(parent_id=rec[0])):
+            for child in (
+                    self._select_elem(parent_id=rec['id'], type=t) if t else self._select_elem(parent_id=rec['id'])):
                 yield child
                 for x in self.yield_childs((child,), t):
                     yield x
 
     def childs(self, recs, _type=None):
-        return [x for x in self.yield_childs(recs) if not _type or x[1] == _type]
+        return [x for x in self.yield_childs(recs) if not _type or x['type'] == _type]
 
     def parent(self, recs):
         ret = []
         for rec in recs:
-            for x in self._select_elem(id=rec[3]):
+            for x in self._select_elem(id=rec['parent_id']):
                 ret.append(x)
         return ret
 
@@ -238,18 +191,18 @@ class DbParser(HTMLParser):
             if before:
                 if l in before:
                     ret.append(html)
-            if l[1] == DECL:
-                ret.append('<!' + l[2] + '>')
-            elif l[1] == PI:
-                ret.append('<?' + l[2] + '>')
-            elif l[1] == COMMENT:
-                ret.append('<!--' + l[2] + '-->')
-            elif l[1] == DATA:
-                ret.append(l[2])
-            elif l[1] == TAG:
-                content = self.to_string(self._select_elem(parent_id=l[0]), after=after, html=html)
-                attributes = render_attrs(self._select_attr(l[0]), ' ')
-                tagname = l[2]
+            if l['type'] == DECL:
+                ret.append('<!' + l['data'] + '>')
+            elif l['type'] == PI:
+                ret.append('<?' + l['data'] + '>')
+            elif l['type'] == COMMENT:
+                ret.append('<!--' + l['data'] + '-->')
+            elif l['type'] == DATA:
+                ret.append(l['data'])
+            elif l['type'] == TAG:
+                content = self.to_string(self._select_elem(parent_id=l['id']), after=after, html=html)
+                attributes = render_attrs(self._select_attr(l['id']), ' ')
+                tagname = l['data']
                 if content:
                     ret.append('<%s%s>%s</%s>' % (tagname, attributes, content, tagname))
                 else:
@@ -257,13 +210,10 @@ class DbParser(HTMLParser):
             if after:
                 if l in after:
                     ret.append(html)
-        return ''.join(ret)
+        return ''.join((str(x) for x in ret))
 
     def tag(self, tag_name):
-        cursor = self._conn.cursor()
-        cursor.execute('SELECT * FROM elem WHERE `type`=? AND `data`=?;', (TAG, tag_name))
-        ret = cursor.fetchall()
-        return ret
+        return self._select_elem(type=TAG, data=tag_name)
 
     def id(self, _id):
         return self.attr(id=_id)
@@ -273,7 +223,7 @@ class DbParser(HTMLParser):
         Return a new parser instance
         """
         new_html = self.to_string(self._select_elem(), after=recs, html=html)
-        ret = DbParser()
+        ret = DictParser()
         ret.loads(new_html)
         return ret
 
@@ -289,21 +239,27 @@ class DbParser(HTMLParser):
             )
 
         """
-        values = []
-        join = []
-        where = []
-        i = 0
-        for k, v in params.items():
-            i += 1
-            values.append(k)
-            values.append(v)
-            where.append("a%i.k %s ? AND a%i.v %s ?" % (i, function, i, function))
-            if i > 1:
-                join.append('JOIN attr a%i ON a1.elem_id = a%i.elem_id' % (i, i))
-        cursor = self._conn.cursor()
-        cursor.execute("select * from elem where id in (SELECT a1.elem_id FROM attr a1 %s WHERE %s);" % (
-            ' '.join(join), ' AND '.join(where)), values)
-        ret = cursor.fetchall()
+        if function.lower() == 'like':
+            for k, v in params.items():
+                params[k] = re.compile(re.escape(v).replace('%%', '%').replace('%', '.*'), re.I)
+        if function.lower() == 'regexp':
+            for k, v in params.items():
+                params[k] = re.compile(v, re.I)
+        if function.lower() == 'like' or function.lower() == 'regexp':
+            filtered = []
+            for elem_id, attrs in self._attr.items():
+                ok = True
+                for k, v in params.items():
+                    if k not in attrs or not v.match(attrs[k]):
+                        ok = False
+                        break
+                if ok:
+                    filtered.append(elem_id)
+        else:
+            params_item = params.items()
+            filtered = [elem_id for elem_id in self._attr if
+                        all((y in self._attr[elem_id].items() for y in params_item))]
+        ret = [self._elem[x] for x in filtered]
         return ret
 
 
@@ -336,10 +292,10 @@ def test4(parser):
     assert len(x) == 2
     x = parser.attr(x='85%', y='728%')
     assert len(x) == 2
-    assert x[0][2] == 'text'
-    assert x[1][2] == 'tspan'
-    assert x[0][1] == TAG
-    assert x[1][1] == TAG
+    assert x[0]['data'] == 'text'
+    assert x[1]['data'] == 'tspan'
+    assert x[0]['type'] == TAG
+    assert x[1]['type'] == TAG
 
 
 def test5(parser):
@@ -400,10 +356,10 @@ def test8(parser):
                 pass
 
     for j, rec in enumerate(parser2.childs(parser2.id('poker'), DATA)):
-        parser2.set_elem_value(rec[0], poker_values[j])
+        parser2.set_elem_value(rec['id'], poker_values[j])
 
     for j, rec in enumerate(parser2.childs(parser2.id('ore'), DATA)):
-        parser2.set_elem_value(rec[0], ore_values[j])
+        parser2.set_elem_value(rec['id'], ore_values[j])
         if len(str(ore_values[j])) > 1:
             delta = 8 * (len(str(ore_values[j])) - 1)  # the spartan way
             for parent in parser2.parent((rec,)):
@@ -421,7 +377,7 @@ def test9(parser):
     template = parser.id('template')
     childs = parser.childs(template, _type=TAG)
     assert len(childs) == 9
-    assert all((x[1] == TAG for x in childs))
+    assert all((x['type'] == TAG for x in childs))
 
 
 def main(argv):
@@ -429,14 +385,14 @@ def main(argv):
 
     my_name = inspect.stack()[0][3]
     for f in argv:
-        parser = DbParser()
+        parser = DictParser()
         parser.load('test/test.svg')
         globals()[f](parser)
     if not argv:
         fs = [globals()[x] for x in globals() if
               inspect.isfunction(globals()[x]) and x.startswith('test') and x != my_name]
         for f in fs:
-            parser = DbParser()
+            parser = DictParser()
             parser.load('test/test.svg')
             print f.__name__
             f(parser)
